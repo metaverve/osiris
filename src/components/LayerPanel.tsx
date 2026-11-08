@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plane, Satellite, Sun, AlertTriangle, Camera,
   CloudLightning, Ship, Network, Database, Ghost,
-  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal
+  Megaphone, SlidersHorizontal, Crosshair
 } from 'lucide-react';
 import StyleStudio from './StyleStudio';
 import { TERRAIN_MIN_ZOOM, type TerrainStatus } from '@/lib/map-terrain';
@@ -89,6 +89,7 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'sat_navigation', label: 'GPS / Navigation', dataKey: 'satellites', catKey: 'navigation' },
       { key: 'sat_earth', label: 'Earth Observation', dataKey: 'satellites', catKey: 'earth_obs' },
       { key: 'sat_science', label: 'Stations / Telescopes', dataKey: 'satellites', catKey: 'science' },
+      { key: 'balloons', label: 'Weather Balloons', description: 'Radiosondes · SondeHub', dataKey: 'balloons' },
     ],
   },
   {
@@ -120,6 +121,7 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'global_incidents', label: 'Global Incidents', dataKey: 'gdelt' },
       { key: 'alert_pins', label: 'Live Alert Pins', dataKey: 'alert_pins' },
       { key: 'gdelt_events', label: 'GDELT Events', dataKey: 'gdelt_events' },
+      { key: 'disease', label: 'Disease Outbreaks', description: 'WHO bulletins · country centroid', dataKey: 'disease_outbreaks' },
     ],
   },
   {
@@ -138,6 +140,14 @@ const LAYER_GROUPS: LayerGroupDef[] = [
     layers: [
       { key: 'cf_outages', label: 'Internet Outages', dataKey: 'cf_outages', requires: 'cloudflare' },
       { key: 'cf_attacks', label: 'Attack Origins', dataKey: 'cf_attack_origins', requires: 'cloudflare' },
+    ],
+  },
+  {
+    label: 'ANALYSIS',
+    fullLabel: 'CROSS-SOURCE ANALYSIS',
+    icon: Crosshair,
+    layers: [
+      { key: 'convergence', label: 'Flashpoints', description: '3+ event types in the same 1° cell · 24h', dataKey: '' },
     ],
   },
   {

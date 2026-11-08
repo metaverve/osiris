@@ -306,6 +306,8 @@ export const LAYERS: Record<string, string> = {
   cf_outages: 'internet outages (Cloudflare Radar)',
   malware: 'malware command-and-control servers',
   balloons: 'high-altitude balloons',
+  convergence: 'flashpoints: cells where three or more event types co-occur',
+  disease: 'disease outbreak bulletins (WHO) placed at the country centroid',
 };
 
 /** Panels the assistant may open. */
@@ -315,6 +317,7 @@ export const PANELS: Record<string, string> = {
   intel: 'OSINT recon tools (IP, domain, username lookups)',
   layers: 'the layer panel',
   directions: 'driving directions',
+  analysis: 'cross-source analysis: flashpoints, the instability index and disease outbreaks',
   forecast: 'the OI forecast panel (the prediction engine)',
   workspace: 'the full-screen OI workspace for the current forecast',
 };

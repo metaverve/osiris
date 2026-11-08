@@ -19,6 +19,7 @@ import CctvPreviews, { type PreviewCamera } from '@/components/CctvPreviews';
 import MapControls from '@/components/MapControls';
 import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreviews';
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
+import { computeConvergence } from '@/lib/convergence';
 
 import { applyMapProjection } from '@/lib/map-projection';
 
@@ -434,7 +435,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       createDot(map, 'dot-fire', isGhost ? phantomPurple : '#E65100', 10);
       createDot(map, 'dot-cctv', cameraColor, 10);
 
-      const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'malware-new', 'network-mesh', 'cyber-heads', 'gdelt-events', 'cf-outages', 'cf-attacks', 'alert-pins'];
+      const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'malware-new', 'network-mesh', 'cyber-heads', 'gdelt-events', 'cf-outages', 'cf-attacks', 'alert-pins', 'convergence', 'disease'];
       sources.forEach(s => map.addSource(s, { type: 'geojson', data: EMPTY_FC }));
 
       // ── FLIGHT ROUTE VISUALIZATION SOURCES & LAYERS ──
@@ -863,6 +864,47 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         'text-offset': [0, 1.5], 'text-allow-overlap': false,
       }, paint: { 'text-color': ['match', ['get','status'], 'DANGER','#D32F2F', 'WARNING','#E65100', '#7E57C2'], 'text-halo-color': '#000', 'text-halo-width': 1 }});
 
+      // ── CONVERGENCE — cells where three or more event types co-occur ──
+      // The score is a per-cell reading of how many independent feeds are
+      // active in the same 1° box, not a prediction: one circle per cell.
+      map.addLayer({ id: 'convergence-glow', type: 'circle', source: 'convergence', paint: {
+        'circle-radius': ['interpolate',['linear'],['get','score'], 50,14, 75,24, 100,40],
+        'circle-color': ['match', ['get','level'], 'CRITICAL','#FF3D3D', 'HIGH','#FF9500', '#00E5FF'],
+        'circle-opacity': 0.08, 'circle-blur': 1,
+      }});
+      map.addLayer({ id: 'convergence-cells', type: 'circle', source: 'convergence', paint: {
+        'circle-radius': ['interpolate',['linear'],['get','score'], 50,5, 75,8, 100,13],
+        'circle-color': ['match', ['get','level'], 'CRITICAL','#FF3D3D', 'HIGH','#FF9500', '#00E5FF'],
+        'circle-opacity': 0.55,
+        'circle-stroke-width': 1.5,
+        'circle-stroke-color': ['match', ['get','level'], 'CRITICAL','#FF3D3D', 'HIGH','#FF9500', '#00E5FF'],
+        'circle-stroke-opacity': 0.9,
+      }});
+      map.addLayer({ id: 'convergence-label', type: 'symbol', source: 'convergence', minzoom: 2.5, layout: {
+        'text-field': ['concat', ['to-string', ['get','score']], ' · ', ['get','eventCount']],
+        'text-size': 9, 'text-font': ['Open Sans Bold'], 'text-offset': [0, 1.6], 'text-allow-overlap': false,
+      }, paint: {
+        'text-color': ['match', ['get','level'], 'CRITICAL','#FF3D3D', 'HIGH','#FF9500', '#00E5FF'],
+        'text-halo-color': '#000', 'text-halo-width': 1,
+      }});
+
+      // ── DISEASE OUTBREAKS — WHO bulletins placed at the country centroid ──
+      // A bulletin names a country, not a street: the dot is the centroid of the
+      // country it names, and the popup says so rather than implying a location.
+      map.addLayer({ id: 'disease-glow', type: 'circle', source: 'disease', paint: {
+        'circle-radius': ['interpolate',['linear'],['zoom'], 1,10, 5,18, 10,30],
+        'circle-color': '#F59E0B', 'circle-opacity': 0.10, 'circle-blur': 1,
+      }});
+      map.addLayer({ id: 'disease-dots', type: 'circle', source: 'disease', paint: {
+        'circle-radius': ['interpolate',['linear'],['zoom'], 1,4, 5,6, 10,8],
+        'circle-color': '#F59E0B', 'circle-opacity': 0.85,
+        'circle-stroke-width': 1, 'circle-stroke-color': '#F59E0B', 'circle-stroke-opacity': 0.35,
+      }});
+      map.addLayer({ id: 'disease-label', type: 'symbol', source: 'disease', minzoom: 3, layout: {
+        'text-field': ['get','country'], 'text-size': 9, 'text-font': ['Open Sans Regular'],
+        'text-offset': [0, 1.4], 'text-allow-overlap': false, 'text-max-width': 12,
+      }, paint: { 'text-color': '#F59E0B', 'text-halo-color': '#000', 'text-halo-width': 1 }});
+
       // ══ OSIRIS SDK — Lattice Intelligence Mesh ══
       // Polybolos Style: Delicate, translucent, steel-blue splined mesh
 
@@ -1151,7 +1193,7 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       'gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots',
       'balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots',
       'sdk-sea','sdk-air','sdk-intel','malware-dots','cyber-heads','gdelt-events-dots',
-      'cf-outage-dots','cf-attack-dots','flight-dots','military-dots','jet-dots','private-dots','alert-pin-dots']);
+      'cf-outage-dots','cf-attack-dots','flight-dots','military-dots','jet-dots','private-dots','alert-pin-dots','convergence-cells','disease-dots']);
 
     // Satellites are picked on the GPU: the pick pass runs the same vertex
     // shader as the visible one, so the target is always exactly where the
@@ -1581,6 +1623,33 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
           <div><span style="color:#5C5A54;font-size:9px;">STATUS</span><br/><span style="color:${color};">${p.status}</span></div>
           <div><span style="color:#5C5A54;font-size:9px;">NETWORK</span><br/><span style="color:#E8E6E0;">${p.network}</span></div>
         </div>
+      </div>`);
+    });
+
+    // ── Convergence flashpoints ──
+    map.on('click', 'convergence-cells', e => {
+      if (!e.features?.length) return;
+      const p = e.features[0].properties as { score?: number; level?: string; eventCount?: number; distinctTypes?: number; types?: string; samples?: string };
+      const coords = (e.features[0].geometry as any).coordinates;
+      const color = p.level === 'CRITICAL' ? '#FF3D3D' : p.level === 'HIGH' ? '#FF9500' : '#00E5FF';
+      popup(coords, `<div style="${pStyle}border:1px solid ${color}40;">
+        <div style="color:${color};font-size:12px;font-weight:700;letter-spacing:0.08em;margin-bottom:4px;">◈ CONVERGENCE ${p.score}/100</div>
+        <div style="font-size:9px;color:#aaa;margin-bottom:8px;">${p.level} · ${p.distinctTypes} EVENT TYPES · ${p.eventCount} SIGNALS / 24H</div>
+        <div style="font-size:10px;color:#E8E6E0;margin-bottom:6px;">${p.types || ''}</div>
+        <div style="font-size:9px;color:#8A8880;">${p.samples || ''}</div>
+      </div>`);
+    });
+
+    // ── Disease outbreaks (WHO DON, placed at country centroid) ──
+    map.on('click', 'disease-dots', e => {
+      if (!e.features?.length) return;
+      const p = e.features[0].properties as { title?: string; country?: string; published?: string };
+      const coords = (e.features[0].geometry as any).coordinates;
+      popup(coords, `<div style="${pStyle}border:1px solid rgba(245,158,11,0.4);">
+        <div style="color:#F59E0B;font-size:11px;font-weight:700;margin-bottom:4px;">◉ DISEASE OUTBREAK</div>
+        <div style="font-size:11px;color:#E8E6E0;margin-bottom:6px;">${p.title || ''}</div>
+        <div style="font-size:9px;color:#8A8880;">${p.country || 'Country not stated'} · ${(p.published || '').slice(0, 10)} · WHO DON</div>
+        <div style="font-size:8px;color:#5C5A54;margin-top:6px;">Placed at the country centroid, not an outbreak location.</div>
       </div>`);
     });
 
@@ -2222,6 +2291,40 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     if (!mapReady) return;
     setGeo('radiation', activeLayers.radiation && data.radiation ? data.radiation.map((r: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lng, r.lat] }, properties: { name: r.name, city: r.city, country: r.country, reading: r.reading, status: r.status, network: r.network } })) : []);
   }, [mapReady, data.radiation, activeLayers.radiation, setGeo]);
+
+  // Convergence — computed on the client from the feeds already loaded, so the
+  // layer costs no extra request and always agrees with the panels beside it.
+  useEffect(() => {
+    if (!mapReady) return;
+    if (!activeLayers.convergence) { setGeo('convergence', []); return; }
+    const cells = computeConvergence(data).cells;
+    setGeo('convergence', cells.map(c => ({
+      type: 'Feature' as const,
+      geometry: { type: 'Point' as const, coordinates: [c.lng, c.lat] },
+      properties: {
+        score: c.score,
+        level: c.level,
+        eventCount: c.eventCount,
+        distinctTypes: c.distinctTypes,
+        types: c.types.map(t => `${t.type.toUpperCase()} ${t.count}`).join(' · '),
+        samples: c.sample.slice(0, 5).map(s => s.label).filter(Boolean).join(' · '),
+      },
+    })));
+  }, [mapReady, data, activeLayers.convergence, setGeo]);
+
+  // Disease outbreaks — WHO bulletins at the centroid of the country they name.
+  useEffect(() => {
+    if (!mapReady) return;
+    setGeo('disease', activeLayers.disease && data.disease_outbreaks
+      ? data.disease_outbreaks
+        .filter((d: { lat?: unknown; lng?: unknown }) => typeof d.lat === 'number' && typeof d.lng === 'number')
+        .map((d: { lat?: number; lng?: number; title?: string; country?: { name?: string } | null; published?: string; url?: string; donId?: string | null }) => ({
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: [d.lng, d.lat] },
+          properties: { title: d.title, country: d.country?.name ?? '', published: d.published ?? '', url: d.url ?? '', donId: d.donId ?? '' },
+        }))
+      : []);
+  }, [mapReady, data.disease_outbreaks, activeLayers.disease, setGeo]);
 
   // ══ OSIRIS SDK — Lattice Sensor Mesh ══
   // Uses real submarine cable data for SEA domain, curated routes for AIR/INTEL

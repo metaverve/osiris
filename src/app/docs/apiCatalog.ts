@@ -119,6 +119,15 @@ export const API_GROUPS: ApiGroup[] = [
         notes:
           '`storm_color` is a hex string the HUD renders directly, so clients need no severity lookup table. `kp_index` is null and `storm_level` is "Unknown" when NOAA did not answer — absence of a reading is never reported as "Quiet".',
       },
+      {
+        path: '/api/balloons',
+        method: 'GET',
+        summary: 'Live high-altitude weather balloons (radiosondes) from the SondeHub community network.',
+        params: [{ name: 'duration', required: false, desc: 'Telemetry window: 15s, 1m, 30m, 1h or 3h (default 1h).', example: '1h' }],
+        returns: ['balloons', 'total', 'source', 'timestamp'],
+        notes:
+          'Keyless. One entry per currently-tracked sonde, carrying its newest frame: `callsign`, `type`, `status` (ASCENT / DESCENT / FLOAT), `lat`, `lng`, `altitude` (m), `speed` (km/h), `verticalRate` (m/s), `temperature`, `color`, `datetime`. Cached `s-maxage=300`. Returns 200 with an empty list plus `error` when SondeHub does not answer.',
+      },
     ],
   },
   {
@@ -146,6 +155,15 @@ export const API_GROUPS: ApiGroup[] = [
         method: 'GET',
         summary: 'Severe weather and natural events from NASA EONET.',
         returns: ['events', 'total', 'timestamp'],
+      },
+      {
+        path: '/api/disease-outbreaks',
+        method: 'GET',
+        summary: 'Active disease-outbreak bulletins from WHO Disease Outbreak News.',
+        params: [{ name: 'limit', required: false, desc: 'Maximum bulletins to return (1–60, default 60).', example: '30' }],
+        returns: ['outbreaks', 'total', 'countries', 'latest', 'source', 'timestamp'],
+        notes:
+          'Keyless. Items are WHO DON bulletins, newest first, with HTML stripped. `country` is matched from the bulletin text (whole names, longest first); `lat`/`lng` are the centroid of that country — an approximate placement, never a claimed outbreak location. Bulletins with no resolvable country carry `country: null` and no coordinates rather than a guessed point. Cached `s-maxage=1800`.',
       },
       {
         path: '/api/air-quality',

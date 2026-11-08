@@ -22,6 +22,8 @@ import SharePanel from '@/components/SharePanel';
 import ViewPresets from '@/components/ViewPresets';
 import KeyboardShortcuts from '@/components/KeyboardShortcuts';
 import GlobalStatusBar from '@/components/GlobalStatusBar';
+import FreshnessStrip from '@/components/FreshnessStrip';
+import type { FeedStatus } from '@/lib/freshness';
 import LiveAlerts from '@/components/LiveAlerts';
 import WorldRemote from '@/components/WorldRemote';
 import ArcGISPanel from '@/components/ArcGISPanel';
@@ -31,6 +33,7 @@ const SpaceCam = dynamic(() => import('@/components/SpaceCam'), { ssr: false });
 const CameraViewer = dynamic(() => import('@/components/CameraViewer'));
 const OsintPanel = dynamic(() => import('@/components/OsintPanel'));
 const OiPanel = dynamic(() => import('@/components/OiPanel'));
+const AnalysisPanel = dynamic(() => import('@/components/AnalysisPanel'));
 const DrawingToolbar = dynamic(() => import('@/components/DrawingToolbar'), { ssr: false });
 const DrawHud = dynamic(() => import('@/components/DrawHud'), { ssr: false });
 // The measurement helpers are pure functions — importing them directly keeps
@@ -171,12 +174,55 @@ const SPLASH_PROGRESS = ['25%', '50%', '78%', '100%'];
 const HUD_EASE = [0.22, 1, 0.36, 1] as const;
 const hudIn = (delay: number) => ({ duration: 0.7, ease: HUD_EASE, delay });
 
+/* ── FEED FRESHNESS ──
+   Every fetchEndpoint call stamps the feed it reads into this list, and the
+   HUD strip reports the age of the last success. A route that starts failing
+   or serving stale cache is then visible in the chrome instead of only in the
+   console. The ages are what the browser observed — not a claim about upstream. */
+const FEED_META: Record<string, { id: string; label: string; staleAfterMs: number }> = {
+  '/api/news': { id: 'news', label: 'NEWS', staleAfterMs: 10 * 60_000 },
+  '/api/weather': { id: 'weather', label: 'WX', staleAfterMs: 10 * 60_000 },
+  '/api/markets': { id: 'markets', label: 'MKT', staleAfterMs: 20 * 60_000 },
+  '/api/flights': { id: 'flights', label: 'AIR', staleAfterMs: 10 * 60_000 },
+  '/api/maritime': { id: 'maritime', label: 'SEA', staleAfterMs: 5 * 60_000 },
+  '/api/satellites': { id: 'satellites', label: 'SAT', staleAfterMs: 30 * 60_000 },
+  '/api/fires': { id: 'fires', label: 'FIRE', staleAfterMs: 20 * 60_000 },
+  '/api/cctv': { id: 'cctv', label: 'CCTV', staleAfterMs: 30 * 60_000 },
+  '/api/live-news': { id: 'live-news', label: 'LIVE', staleAfterMs: 30 * 60_000 },
+  '/api/balloons': { id: 'balloons', label: 'SONDE', staleAfterMs: 15 * 60_000 },
+  '/api/disease-outbreaks': { id: 'disease', label: 'WHO', staleAfterMs: 3 * 60 * 60_000 },
+  /* The seismic feed is fetched straight from USGS, not through /api. */
+  'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson': { id: 'earthquakes', label: 'QUAKE', staleAfterMs: 20 * 60_000 },
+};
+function feedMetaFor(url: string) {
+  const path = url.split('?')[0];
+  const known = FEED_META[path];
+  if (known) return known;
+  const tail = path.split('/').filter(Boolean).pop() || 'feed';
+  return { id: path, label: tail.slice(0, 7).toUpperCase(), staleAfterMs: 15 * 60_000 };
+}
+function markFeed(list: FeedStatus[], url: string, ok: boolean, error?: string): FeedStatus[] {
+  const meta = feedMetaFor(url);
+  const at = ok ? Date.now() : null;
+  const previous = list.find(f => f.id === meta.id);
+  const entry: FeedStatus = {
+    ...meta,
+    fetchedAt: at ?? previous?.fetchedAt ?? null,
+    ok,
+    ...(error ? { error } : {}),
+  };
+  const next = previous ? list.map(f => (f.id === meta.id ? entry : f)) : [...list, entry];
+  return next.slice(-24).sort((a, b) => a.label.localeCompare(b.label));
+}
+
 export default function Dashboard() {
   const dataRef = useRef<any>({});
   const [dataVersion, setDataVersion] = useState(0);
   const data = dataRef.current;
 
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  /* What the HUD's freshness strip reports: one row per feed this page reads. */
+  const [feedStatus, setFeedStatus] = useState<FeedStatus[]>([]);
   const [mapView, setMapView] = useState({ zoom: 2.5, latitude: 20 });
   const [flyToLocation, setFlyToLocation] = useState<{ lat: number; lng: number; zoom?: number; alertId?: string; duration?: number; ts: number } | null>(null);
   /* The Live Alerts the feed's filters leave showing; the map pins those. */
@@ -221,6 +267,9 @@ export default function Dashboard() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [showSpaceCam, setShowSpaceCam] = useState(false);
   const [showScmPanel, setShowScmPanel] = useState(true);
+  /* The cross-source analysis panel: flashpoints, the instability index and
+     WHO disease outbreaks, in one rail button with three tabs. */
+  const [showAnalysis, setShowAnalysis] = useState(false);
   const [showIntel, setShowIntel] = useState(false);
   const [showDrawing, setShowDrawing] = useState(false);
   const [drawMode, setDrawMode] = useState<DrawMode | null>(null);
@@ -502,6 +551,12 @@ export default function Dashboard() {
     gdelt_events: false,
     cf_outages: false,
     cf_attacks: false,
+    /* Who's public health bulletins — WHO Disease Outbreak News, placed at the
+       centroid of the country the bulletin names. Off like the other feeds. */
+    disease: false,
+    /* Cells where three or more event types co-occur — computed on the client
+       from the feeds already loaded (lib/convergence). No request of its own. */
+    convergence: false,
   });
   // ── OI ASSIST ── the conversation, and the page it works: the camera, the
   // layers, the panels, the live data, and what it marks on the map. It lives
@@ -531,6 +586,10 @@ export default function Dashboard() {
     else if (panel === 'alerts') right(() => setShowAlerts(true));
     else if (panel === 'intel') { if (phone) setMobilePanel('recon'); else right(() => setShowIntel(true)); }
     else if (panel === 'layers') { if (phone) setMobilePanel('layers'); else setShowLayers(true); }
+    else if (panel === 'analysis') {
+      setShowOi(false); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false);
+      setShowAnalysis(true);
+    }
     else if (panel === 'directions') setShowDirections(true);
     else if (panel === 'forecast' || panel === 'workspace') {
       setOiMode('forecast');
@@ -538,6 +597,12 @@ export default function Dashboard() {
       if (panel === 'workspace' && assistOi.current.state && !phone) setOiTheater(true);
     }
   }, []);
+  /* The analysis panel shares the rail with the other panels. Whenever another
+     one opens, this one closes rather than stacking a second panel on it. */
+  useEffect(() => {
+    if (!showAnalysis) return;
+    if (showOi || showIntel || showMarkets || showAlerts || showSpaceCam || showRemote || showArcGIS) setShowAnalysis(false);
+  }, [showAnalysis, showOi, showIntel, showMarkets, showAlerts, showSpaceCam, showRemote, showArcGIS]);
   const assistTheater = useRef(oiTheater);
   const assistStage = useRef<Stage>(oiStage);
   useEffect(() => { assistTheater.current = oiTheater; }, [oiTheater]);
@@ -801,6 +866,10 @@ export default function Dashboard() {
       if (e.key === 'm') setShowMarkets(p => !p);
       if (e.key === 'c') setShowScmPanel(p => !p);
       if (e.key === 'i') setShowIntel(p => !p);
+      if (e.key === 'a' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        setShowAnalysis(p => !p);
+        setShowOi(false); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false);
+      }
       if (e.key === 's') { setShowDesktopSearch(p => !p); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false); }
       if (e.key === 'r' && !e.ctrlKey && !e.metaKey) setFlyToLocation({ lat: 20, lng: 0, zoom: 2.5, ts: Date.now() });
       if (e.key === 'g') {
@@ -956,12 +1025,15 @@ export default function Dashboard() {
         dataRef.current = { ...dataRef.current, ...d };
         setDataVersion(v => v + 1);
         setBackendStatus('connected');
+        setFeedStatus(prev => markFeed(prev, url, true));
         return true;
       }
+      setFeedStatus(prev => markFeed(prev, url, false, `HTTP ${res.status}`));
       return false;
     } catch (e) {
       console.warn('[OSIRIS] Suppressed error:', e instanceof Error ? e.message : e);
       setBackendStatus('error');
+      setFeedStatus(prev => markFeed(prev, url, false, e instanceof Error ? e.message : 'fetch failed'));
       return false;
     }
   }, []);
@@ -1068,6 +1140,11 @@ export default function Dashboard() {
       fetchEndpoint('/api/radiation', d => ({ radiation: d.stations }));
       layerFetchedRef.current.add('radiation');
     }
+    // Disease outbreaks (WHO DON)
+    if (activeLayers.disease && !layerFetchedRef.current.has('disease')) {
+      fetchEndpoint('/api/disease-outbreaks', d => ({ disease_outbreaks: d.outbreaks }));
+      layerFetchedRef.current.add('disease');
+    }
     // Live News
     if (activeLayers.live_news && !layerFetchedRef.current.has('live_news')) {
       fetchEndpoint('/api/live-news', d => ({ live_feeds: d.feeds }));
@@ -1141,6 +1218,16 @@ export default function Dashboard() {
 
   }, [activeLayers]);
 
+  /* The analysis panel's disease tab needs the WHO feed even when the map
+     layer is off: fetch it the first time the panel opens, once. */
+  useEffect(() => {
+    if (!showAnalysis || layerFetchedRef.current.has('disease')) return;
+    layerFetchedRef.current.add('disease');
+    fetchEndpoint('/api/disease-outbreaks', d => ({ disease_outbreaks: d.outbreaks })).then(ok => {
+      if (!ok) layerFetchedRef.current.delete('disease');
+    });
+  }, [showAnalysis, fetchEndpoint]);
+
   // ── LAYER-AWARE POLLING — only poll data for active layers ──
   useEffect(() => {
     const intervals: ReturnType<typeof setInterval>[] = [];
@@ -1154,6 +1241,10 @@ export default function Dashboard() {
     }
     if (activeLayers.radiation) {
       intervals.push(setInterval(() => fetchEndpoint('/api/radiation', d => ({ radiation: d.stations })), 300000)); // 5m
+    }
+    if (activeLayers.disease) {
+      // WHO publishes a few bulletins a week; an hour of polling is generous.
+      intervals.push(setInterval(() => fetchEndpoint('/api/disease-outbreaks', d => ({ disease_outbreaks: d.outbreaks })), 3600000));
     }
     if (activeLayers.maritime) {
       /* Ten seconds is the cadence a moving vessel needs. The other two thirds
@@ -1732,6 +1823,10 @@ export default function Dashboard() {
             REAL-TIME GLOBAL MONITORING <span className="hidden md:inline">· FLIGHTS · MARITIME · SATELLITES · CCTV · WEATHER · CYBER THREATS</span>
           </span>
         </div>
+        {/* What the feeds actually delivered, and how long ago — see lib/freshness. */}
+        <div className="mt-2 hidden md:block w-fit max-w-[min(760px,72vw)]">
+          <FreshnessStrip feeds={feedStatus} compact />
+        </div>
       </motion.div>
 
 
@@ -1881,6 +1976,27 @@ export default function Dashboard() {
             )}
           </button>
           <span className="absolute right-11 top-1/2 -translate-y-1/2 px-2 py-1 text-[9px] font-mono tracking-wider text-white/80 bg-black/80 backdrop-blur-sm rounded whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none">DRAW</span>
+        </div>
+
+        {/* ── CROSS-SOURCE ANALYSIS ── flashpoints, instability index, WHO outbreaks. */}
+        <div className="relative group">
+          <button onClick={() => { setShowAnalysis(!showAnalysis); setShowOi(false); setShowIntel(false); setShowMarkets(false); setShowAlerts(false); setShowSpaceCam(false); setShowDrawing(false); }} className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-white/50 ${showAnalysis ? 'bg-[var(--gold-primary)]/20' : 'hover:bg-white/10'}`} title="Analysis — flashpoints, country instability and disease outbreaks (A)" aria-label="Cross-source analysis" aria-expanded={showAnalysis}>
+            <Activity className={`w-4 h-4 ${showAnalysis ? 'text-[var(--gold-primary)]' : 'text-white/60'}`} />
+            {showAnalysis && (
+              <span
+                aria-hidden="true"
+                className="absolute -right-1 top-1/2 -translate-y-1/2 h-4 w-[2px] rounded-full bg-current text-[var(--gold-primary)]"
+              />
+            )}
+          </button>
+          <span className="absolute right-11 top-1/2 -translate-y-1/2 px-2 py-1 text-[9px] font-mono tracking-wider text-white/80 bg-black/80 backdrop-blur-sm rounded whitespace-nowrap opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pointer-events-none">ANALYSIS</span>
+          <AnimatePresence>
+            {showAnalysis && (
+              <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="absolute right-12 top-1/2 -translate-y-1/2 w-[400px]">
+                <AnalysisPanel data={data} onLocate={(lat, lng) => setFlyToLocation({ lat, lng, zoom: 5, ts: Date.now() })} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* A named group: the OI panel opens inside this wrapper, and an unnamed group would light every hover style in the panel at once. */}
